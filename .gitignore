@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时数据（含 token 等敏感信息，勿提交）
+data/
+token*.json
+tokens/
+*.token
+
+# 下载/打包产物
+*.zip
+*.pdf
+packs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

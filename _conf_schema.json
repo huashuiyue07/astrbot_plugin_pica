@@ -1,0 +1,117 @@
+{
+  "pica_account": {
+    "type": "string",
+    "description": "哔咔账号(邮箱)",
+    "hint": "在 https://pica.life 注册的账号邮箱",
+    "default": ""
+  },
+  "pica_password": {
+    "type": "string",
+    "description": "哔咔密码",
+    "hint": "登录密码，留空则无法使用需登录的功能",
+    "default": ""
+  },
+  "allow_default_account": {
+    "type": "bool",
+    "description": "允许未绑定用户使用默认账号",
+    "hint": "关闭后，每个QQ用户必须用 /picalogin 绑定自己的哔咔账号才能使用，避免群成员共用你的个人账号（强烈建议关闭）",
+    "default": true
+  },
+  "use_proxy": {
+    "type": "bool",
+    "description": "是否使用代理",
+    "hint": "部分地区可能需要代理才能访问 pica API，国内一般直连即可",
+    "default": false
+  },
+  "proxy_url": {
+    "type": "string",
+    "description": "代理服务器地址",
+    "hint": "格式: http://host:port 或 socks5://host:port",
+    "default": "http://127.0.0.1:7890"
+  },
+  "max_retry": {
+    "type": "int",
+    "description": "请求重试次数",
+    "hint": "网络请求失败时的重试次数",
+    "default": 3
+  },
+  "timeout": {
+    "type": "int",
+    "description": "请求超时时间(秒)",
+    "hint": "单个请求的超时时间",
+    "default": 30
+  },
+  "page_size": {
+    "type": "int",
+    "description": "搜索结果每页显示数量",
+    "hint": "搜索/排行榜结果列表一次展示的条目数",
+    "default": 10
+  },
+  "max_concurrent": {
+    "type": "int",
+    "description": "图片下载并发数",
+    "hint": "同时下载的图片数量，建议3-8",
+    "default": 5
+  },
+  "send_cover": {
+    "type": "bool",
+    "description": "详情是否发送封面图",
+    "hint": "查看本子详情时附带封面预览图",
+    "default": true
+  },
+  "modify_md5": {
+    "type": "bool",
+    "description": "下载时修改图片MD5",
+    "hint": "修改图片字节防止被 pica 风控检测，建议开启",
+    "default": true
+  },
+  "pack_format": {
+    "type": "string",
+    "description": "下载打包格式",
+    "hint": "images=直接发送前几张图片; zip=压缩包(可加密); pdf=PDF文档; long_img=纵向长图(过长自动分段打包); none=仅本地保存不发送",
+    "default": "zip",
+    "options": [
+      "images",
+      "zip",
+      "pdf",
+      "long_img",
+      "none"
+    ]
+  },
+  "pack_password": {
+    "type": "string",
+    "description": "打包密码",
+    "hint": "为ZIP或PDF设置密码，留空则不加密",
+    "default": ""
+  },
+  "admin_only": {
+    "type": "bool",
+    "description": "仅管理员可用",
+    "hint": "开启后只有 admin_ids 中的用户能使用本插件",
+    "default": false
+  },
+  "cache_clean_interval_hours": {
+    "type": "int",
+    "description": "缓存自动清理间隔(小时)",
+    "hint": "每隔 N 小时自动清理一次缓存，0 表示关闭自动清理",
+    "default": 12
+  },
+  "cache_max_age_days": {
+    "type": "int",
+    "description": "缓存保留天数",
+    "hint": "超过 N 天的下载缓存自动删除，0 表示不按时间清理",
+    "default": 7
+  },
+  "cache_max_size_mb": {
+    "type": "int",
+    "description": "缓存大小上限(MB)",
+    "hint": "缓存总大小超过上限时自动删除最旧的下载，0 表示不按大小清理",
+    "default": 2048
+  },
+  "admin_ids": {
+    "type": "string",
+    "description": "管理员ID列表",
+    "hint": "逗号分隔的QQ号，admin_only 开启时生效",
+    "default": ""
+  }
+}
