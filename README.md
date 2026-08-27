@@ -1,9 +1,20 @@
 # Pica-Comics — AstrBot 哔咔漫画插件
 
 搜索、查看、下载哔咔漫画（picacomic）本子，支持排行榜、收藏、每日签到。
-API 签名机制参照旧版 [zhenxun_plugin_pica](https://github.com/CCYellowStar2/zhenxun_plugin_pica)
-逆向实现并修复（旧项目硬编码 token 过期、aiohttp 版本过老导致大部分请求失败），
-已实测全部接口可用。
+
+## 参考项目
+
+本项目 API 签名机制参照 [zhenxun_plugin_pica](https://github.com/CCYellowStar2/zhenxun_plugin_pica)
+（原作者：CCYellowStar2，[真寻 bot](https://github.com/HibiKier/zhenxun_bot) 的哔咔插件）逆向实现。
+
+原项目存在以下问题，本插件已重写修复：
+- 硬编码 token 过期后无法使用（原项目大部分请求失败）
+- aiohttp 3.8.4 版本过老，与新版 API 不兼容
+- 签名 path 带前导斜杠时 pica 返回假的 `{"code":200}` 空响应（本插件已正确处理）
+- 中文参数未 URL 编码导致分区浏览返回空（本插件已修复）
+- 无登录态管理（token 过期不会自动重登）
+
+打包功能参考 [astrbot_plugin_jm_cosmos](https://github.com/Soulter/astrbot_plugin_jm_cosmos) 的打包器实现。
 
 ## 安装
 

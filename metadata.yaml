@@ -1,6 +1,6 @@
 name: astrbot_plugin_pica
 display_name: Pica-Comics
-desc: 哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持排行榜/收藏/每日签到
-version: v1.0.0
-author: huangtao
-repo: https://github.com/CCYellowStar2/zhenxun_plugin_pica
+desc: 哔咔漫画插件 - 搜索/详情/章节/整本下载，支持排行榜/收藏/签到，打包格式 zip/pdf/长图
+version: v1.3.0
+author: huashuiyue07
+repo: https://github.com/huashuiyue07/astrbot_plugin_pica
