@@ -4,3 +4,15 @@ desc: 哔咔漫画插件 - 搜索/详情/章节/整本下载，支持排行榜/�
 version: v1.3.0
 author: huashuiyue07
 repo: https://github.com/huashuiyue07/astrbot_plugin_pica
+astrbot_version: ">=4.0.0"
+support_platforms:
+  - onebot_v11
+tags:
+  - 哔咔
+  - 漫画
+  - 本子
+  - picacomic
+  - comic
+  - R18
+  - 搜索
+  - 下载
