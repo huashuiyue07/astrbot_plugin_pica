@@ -307,5 +307,5 @@ class PicaClient:
 
     async def punch_in(self, token: str = None) -> dict:
         """每日签到"""
-        result = await self._request("GET", "/users/punch-in", token=token)
+        result = await self._request("POST", "/users/punch-in", token=token)
         return result.get("data", {})
