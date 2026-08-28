@@ -456,38 +456,94 @@ class PicaPlugin(Star):
             )
             safe_name = self._safe_filename(title)
             packs_dir = self.data_dir / PACKS_DIR
-            result = packer.pack(root_dir, safe_name, packs_dir)
 
-            if not result.success or not result.output_path:
+            # 按大小分批打包发送，避免单文件过大被 QQ 拒绝（rich media transfer failed）
+            batch_mb = int(self.config.get("send_batch_mb", 20) or 0)
+            batches = self._batch_episode_dirs(root_dir, batch_mb)
+            if not batches:
                 await self.context.send_message(
-                    umo,
-                    MessageChain(
-                        [Comp.Plain(f"❌ [{title}] 打包失败: {result.error_message}")]
-                    ),
+                    umo, MessageChain([Comp.Plain(f"❌ [{title}] 没有可发送的章节")])
                 )
                 return
 
-            out_path = result.output_path
-            suffix = out_path.suffix.lower()
-            texts = [f"✅ [{title}] 整本下载完成，共 {total} 章"]
-            if result.encrypted and self.config.get("pack_password", ""):
-                texts.append(f"🔒 密码: {self.config.get('pack_password', '')}")
-            text = "\n".join(texts)
+            total_batches = len(batches)
+            sent_ok = 0
+            for idx, batch in enumerate(batches, 1):
+                # 该批章节临时移入独立目录打包，避免混入其他批次
+                tmp_batch = root_dir / ".batch_tmp"
+                tmp_batch.mkdir(exist_ok=True)
+                for d in batch:
+                    shutil.move(str(d), str(tmp_batch / d.name))
+                try:
+                    batch_name = safe_name if total_batches == 1 else f"{safe_name}_part{idx}"
+                    result = packer.pack(tmp_batch, batch_name, packs_dir)
+                finally:
+                    for d in batch:
+                        shutil.move(str(tmp_batch / d.name), str(root_dir / d.name))
+                    try:
+                        tmp_batch.rmdir()
+                    except OSError:
+                        pass
 
-            if pack_format == "long_img" and suffix == ".png":
-                chain = MessageChain(
-                    [Comp.Image(file=str(out_path)), Comp.Plain(text)]
+                if not result.success or not result.output_path:
+                    await self.context.send_message(
+                        umo,
+                        MessageChain(
+                            [Comp.Plain(f"❌ [{title}] 第{idx}批打包失败: {result.error_message}")]
+                        ),
+                    )
+                    continue
+
+                out_path = result.output_path
+                suffix = out_path.suffix.lower()
+                ep_orders = sorted(
+                    int(d.name.replace("ep", "")) for d in batch if d.name.startswith("ep")
                 )
-            elif suffix in (".zip", ".pdf", ".png"):
-                chain = MessageChain(
-                    [
-                        Comp.File(name=out_path.name, file=str(out_path)),
-                        Comp.Plain(text),
-                    ]
+                ep_range = f"{ep_orders[0]}-{ep_orders[-1]}" if ep_orders else str(idx)
+                texts = [f"✅ [{title}] 第{ep_range}章 打包完成"]
+                if result.encrypted and self.config.get("pack_password", ""):
+                    texts.append(f"🔒 密码: {self.config.get('pack_password', '')}")
+                if total_batches > 1:
+                    texts.append(f"📦 进度: {idx}/{total_batches} 批")
+                text = "\n".join(texts)
+
+                if pack_format == "long_img" and suffix == ".png":
+                    chain = MessageChain(
+                        [Comp.Image(file=str(out_path)), Comp.Plain(text)]
+                    )
+                elif suffix in (".zip", ".pdf", ".png"):
+                    chain = MessageChain(
+                        [
+                            Comp.File(name=out_path.name, file=str(out_path)),
+                            Comp.Plain(text),
+                        ]
+                    )
+                else:
+                    chain = MessageChain([Comp.Plain(f"{text}\n📁 {out_path}")])
+
+                if await self._send_with_retry(umo, chain):
+                    sent_ok += 1
+                else:
+                    await self.context.send_message(
+                        umo,
+                        MessageChain(
+                            [Comp.Plain(
+                                f"⚠️ [{title}] 第{ep_range}章 发送失败（文件过大或网络问题），"
+                                f"已保存在本地: {out_path}"
+                            )]
+                        ),
+                    )
+
+            if sent_ok == 0 and total_batches > 1:
+                await self.context.send_message(
+                    umo,
+                    MessageChain(
+                        [Comp.Plain(
+                            f"⚠️ [{title}] 整本下载完成，共 {total} 章，"
+                            f"但所有批次发送失败，文件保存在: {packs_dir}"
+                        )]
+                    ),
                 )
-            else:
-                chain = MessageChain([Comp.Plain(f"{text}\n📁 {out_path}")])
-            await self.context.send_message(umo, chain)
         except Exception as e:
             logger.error(f"整本下载任务异常: {e}")
             try:
@@ -497,6 +553,56 @@ class PicaPlugin(Star):
                 )
             except Exception:
                 pass
+
+    @staticmethod
+    def _batch_episode_dirs(root_dir: Path, batch_mb: int) -> list[list[Path]]:
+        """按大小把章节目录分批（连续章节合批，单批 ≤ batch_mb）。
+
+        batch_mb <= 0 时全部合并为一批（整本单文件）。
+        """
+        ep_dirs = sorted(
+            [d for d in root_dir.iterdir() if d.is_dir()],
+            key=lambda p: p.name,
+        )
+        if not ep_dirs:
+            return []
+        if batch_mb <= 0:
+            return [ep_dirs]
+
+        limit = batch_mb * 1024 * 1024
+
+        def _dir_size(d: Path) -> int:
+            try:
+                return sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            except OSError:
+                return 0
+
+        batches: list[list[Path]] = []
+        cur: list[Path] = []
+        cur_size = 0
+        for d in ep_dirs:
+            size = _dir_size(d)
+            if cur and cur_size + size > limit:
+                batches.append(cur)
+                cur, cur_size = [], 0
+            cur.append(d)
+            cur_size += size
+        if cur:
+            batches.append(cur)
+        return batches
+
+    async def _send_with_retry(self, umo, chain, retries: int = 2) -> bool:
+        """发送消息，失败重试（用于发送大文件时应对偶发失败）"""
+        for attempt in range(retries + 1):
+            try:
+                ok = await self.context.send_message(umo, chain)
+                if ok:
+                    return True
+            except Exception as e:
+                logger.warning(f"发送消息失败(第{attempt + 1}次): {e}")
+            if attempt < retries:
+                await asyncio.sleep(2 * (attempt + 1))
+        return False
 
     async def _send_download_result(
         self,

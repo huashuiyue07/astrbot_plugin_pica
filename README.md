@@ -39,6 +39,7 @@ docker restart astrbot
 | modify_md5 | 下载时修改图片 MD5 防平台风控（默认开） |
 | pack_format | 章节下载打包格式：`images`=直接发前 10 张图 / `zip`=压缩包(可加密) / `pdf`=PDF / `long_img`=纵向长图(过长自动分段打包) / `none`=仅本地保存不发送（默认 `zip`） |
 | pack_password | 打包密码，为 ZIP/PDF 加密，留空不加密（默认空） |
+| send_batch_mb | 整本下载单文件大小上限(MB)，超过后按章节分批打包发送（默认 500，0=不分批） |
 | cache_clean_interval_hours | 缓存自动清理间隔(小时)，0 关闭（默认 12） |
 | cache_max_age_days | 超过 N 天的缓存自动删除，0 关闭（默认 7） |
 | cache_max_size_mb | 缓存超上限自动删最旧，0 关闭（默认 2048） |

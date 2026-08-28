@@ -71,8 +71,7 @@
     "hint": "images=直接发送前几张图片; zip=压缩包(可加密); pdf=PDF文档; long_img=纵向长图(过长自动分段打包); none=仅本地保存不发送",
     "default": "zip",
     "options": [
-      "images",
-      "zip",
+      "images",      "zip",
       "pdf",
       "long_img",
       "none"
@@ -83,6 +82,12 @@
     "description": "打包密码",
     "hint": "为ZIP或PDF设置密码，留空则不加密",
     "default": ""
+  },
+  "send_batch_mb": {
+    "type": "int",
+    "description": "整本下载单文件大小上限(MB)",
+    "hint": "整本打包后超过该大小会按章节分批打包发送，避免文件过大被QQ拒绝；0表示不分批",
+    "default": 500
   },
   "admin_only": {
     "type": "bool",
