@@ -89,6 +89,12 @@
     "hint": "整本打包后超过该大小会按章节分批打包发送，避免文件过大被QQ拒绝；0表示不分批",
     "default": 500
   },
+  "progress_step_pct": {
+    "type": "int",
+    "description": "整本下载进度提示间隔(%)",
+    "hint": "每下载完成多少百分比提示一次进度，避免章节多时刷屏",
+    "default": 10
+  },
   "admin_only": {
     "type": "bool",
     "description": "仅管理员可用",

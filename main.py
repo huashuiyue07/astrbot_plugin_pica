@@ -417,12 +417,21 @@ class PicaPlugin(Star):
                 return
             total = len(eps)
 
+            # 按百分比提示进度（默认每 10% 一次，避免 100 章刷屏）
+            step_pct = max(1, int(self.config.get("progress_step_pct", 10) or 10))
+            next_pct = step_pct
+
             async def progress(done, total_eps, ep_order):
-                if done % 5 == 0 or done == total_eps:
+                nonlocal next_pct
+                pct = int(done / total_eps * 100) if total_eps else 100
+                if pct >= next_pct or done == total_eps:
+                    next_pct = pct + step_pct
                     await self.context.send_message(
                         umo,
                         MessageChain(
-                            [Comp.Plain(f"⏳ [{title}] 整本下载中 {done}/{total_eps} 章...")]
+                            [Comp.Plain(
+                                f"⏳ [{title}] 整本下载中 {pct}% ({done}/{total_eps} 章)..."
+                            )]
                         ),
                     )
 
