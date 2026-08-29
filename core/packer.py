@@ -39,6 +39,50 @@ _LONG_IMG_MAX_PER_STRIP = 30  # 单段长图最多包含的图片数
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
+def _detect_image_ext(path: Path) -> str:
+    """根据文件头嗅探图片真实格式（pica 部分图片是 WEBP 但文件名 .jpg）。
+
+    Returns:
+        真实格式后缀（.jpg/.png/.webp/.gif），未知时返回原后缀。
+    """
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(12)
+    except OSError:
+        return path.suffix.lower()
+    if magic.startswith(b"\xff\xd8"):
+        return ".jpg"
+    if magic.startswith(b"\x89PNG"):
+        return ".png"
+    if magic.startswith(b"RIFF") and magic[8:12] == b"WEBP":
+        return ".webp"
+    if magic.startswith(b"GIF8"):
+        return ".gif"
+    return path.suffix.lower()
+
+
+def _image_to_pdf_bytes(path: Path) -> bytes:
+    """图片 → PDF bytes。
+
+    pica 部分图片真实格式是 WEBP 但文件名是 .jpg，fitz 直接打开会失败；
+    这里用 Pillow（按文件头识别真实格式）解码 → 内存 PNG → fitz 转 PDF，
+    完全绕开扩展名与文件句柄问题。
+    """
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+    img = fitz.open(stream=buf.getvalue(), filetype="png")
+    try:
+        return img.convert_to_pdf()
+    finally:
+        img.close()
+
+
 def _collect_images_sorted(source_dir: Path) -> list[Path]:
     """递归收集图片并按自然顺序排序（01,02,...,10 而非 1,10,2）"""
 
@@ -196,9 +240,7 @@ class PicaPacker:
             doc = fitz.open()
             for img_path in image_files:
                 try:
-                    img = fitz.open(img_path)
-                    pdfbytes = img.convert_to_pdf()
-                    img.close()
+                    pdfbytes = _image_to_pdf_bytes(img_path)
                     imgpdf = fitz.open("pdf", pdfbytes)
                     doc.insert_pdf(imgpdf)
                     imgpdf.close()
