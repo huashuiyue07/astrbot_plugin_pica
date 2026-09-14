@@ -38,7 +38,7 @@ PACKS_DIR = "packs"
     "astrbot_plugin_pica",
     "huashuiyue07",
     "哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持整本下载与打包",
-    "1.3.0",
+    "1.4.0",
     "https://github.com/huashuiyue07/astrbot_plugin_pica",
 )
 class PicaPlugin(Star):
