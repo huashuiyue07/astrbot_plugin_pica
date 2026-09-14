@@ -4,7 +4,7 @@
 
 from datetime import datetime
 
-from .constants import CATEGORIES, ORDERS, RANK_TYPES
+from .constants import CATEGORIES, RANK_TYPES
 
 
 class MessageFormatter:

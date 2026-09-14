@@ -18,7 +18,6 @@ from astrbot.api.star import Context, Star, StarTools, register
 from .core import (
     CATEGORIES,
     MessageFormatter,
-    PicaAuthError,
     PicaAuthManager,
     PicaClient,
     PicaDownloader,
@@ -37,10 +36,10 @@ PACKS_DIR = "packs"
 
 @register(
     "astrbot_plugin_pica",
-    "huangtao",
+    "huashuiyue07",
     "哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持整本下载与打包",
-    "1.1.0",
-    "https://github.com/CCYellowStar2/zhenxun_plugin_pica",
+    "1.3.0",
+    "https://github.com/huashuiyue07/astrbot_plugin_pica",
 )
 class PicaPlugin(Star):
     """AstrBot 哔咔漫画插件"""
@@ -99,7 +98,7 @@ class PicaPlugin(Star):
         logger.info("Pica-Comics 插件初始化完成")
 
     async def terminate(self) -> None:
-        """插件卸载/重载时取消后台任务"""
+        """插件卸载/重载时取消后台任务并释放连接"""
         task = getattr(self, "_clean_task", None)
         if task is not None and not task.done():
             task.cancel()
@@ -107,6 +106,10 @@ class PicaPlugin(Star):
                 await task
             except asyncio.CancelledError:
                 pass
+        try:
+            await self.client.aclose()
+        except Exception as e:
+            logger.debug(f"关闭 HTTP 会话失败: {e}")
 
     # ---------- 缓存自动清理 ----------
 
@@ -136,7 +139,7 @@ class PicaPlugin(Star):
     # ---------- 工具 ----------
 
     async def _on_pica_token_invalid(self, user_id: str | None) -> str | None:
-        """client 在收到 401/1005 时回调，自动重新登录返回新 token"""
+        """client 在收到 401/认证错误码时回调，自动重新登录返回新 token"""
         try:
             return await self.auth.force_relogin(user_id or "")
         except Exception as e:
@@ -146,7 +149,7 @@ class PicaPlugin(Star):
     async def _auth_token(self, user_id: str) -> str:
         """获取 token 并把当前 user_id 注入 client，供自动重登录使用"""
         token = await self.auth.ensure_login(user_id)
-        self.client._current_user_id = user_id
+        self.client.set_current_user(user_id)
         return token
 
     @staticmethod
@@ -158,7 +161,7 @@ class PicaPlugin(Star):
         return name[:max_len] or "pica"
 
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
-        """检查权限：管理员白名单（可选）"""
+        """检查权限：管理员白名单（可选，所有命令统一执行）"""
         if not self.config.get("admin_only", False):
             return True, ""
         admin_ids = str(self.config.get("admin_ids", "")).strip()
@@ -173,14 +176,27 @@ class PicaPlugin(Star):
         """当前用户 ID"""
         return str(event.get_sender_id())
 
+    def _guard(self, event: AstrMessageEvent) -> str | None:
+        """权限统一入口：无权限时返回提示文本，有权限返回 None"""
+        ok, msg = self._check_permission(event)
+        return msg if not ok else None
+
     # ---------- 帮助 ----------
 
     @filter.command("picahelp")
     async def help_command(self, event: AstrMessageEvent):
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         yield event.plain_result(MessageFormatter.help_text())
 
     @filter.command("pica")
     async def pica_command(self, event: AstrMessageEvent):
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         yield event.plain_result(MessageFormatter.help_text())
 
     # ---------- 登录（按用户绑定） ----------
@@ -190,19 +206,19 @@ class PicaPlugin(Star):
         self, event: AstrMessageEvent, email: str = None, password: str = None
     ):
         """绑定当前 QQ 的哔咔账号：/picalogin <邮箱> <密码>"""
-        ok, msg = self._check_permission(event)
-        if not ok:
-            yield event.plain_result(msg)
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
             return
         user_id = self._uid(event)
         try:
             if email and password:
                 yield event.plain_result("🔑 正在绑定你的哔咔账号...")
-                token = await self.auth.login(user_id, str(email), str(password))
+                await self.auth.login(user_id, str(email), str(password))
             else:
                 # 未提供账号 → 用配置默认账号绑定
                 yield event.plain_result("🔑 正在用配置账号绑定...")
-                token = await self.auth.bind_default(user_id)
+                await self.auth.bind_default(user_id)
             yield event.plain_result("✅ 绑定成功！当前账号仅你自己使用")
         except PicaError as e:
             yield event.plain_result(f"❌ 绑定失败: {e}")
@@ -210,16 +226,26 @@ class PicaPlugin(Star):
     @filter.command("picalogout")
     async def logout_command(self, event: AstrMessageEvent):
         """解绑当前 QQ 的哔咔账号"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         self.auth.logout(self._uid(event))
         yield event.plain_result("👋 已解绑你的哔咔账号")
 
     @filter.command("picastatus")
     async def status_command(self, event: AstrMessageEvent):
         """查看当前 QQ 的账号状态"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         st = self.auth.status(self._uid(event))
         if st["bound"]:
+            email = st.get("email")
+            email_line = f"（{email}）" if email else ""
             yield event.plain_result(
-                f"✅ 已绑定自己的哔咔账号\n🔑 有效期至: "
+                f"✅ 已绑定自己的哔咔账号{email_line}\n🔑 有效期至: "
                 f"{MessageFormatter.ts_str(st['expire'])}"
             )
         elif st["source"] == "default":
@@ -240,9 +266,9 @@ class PicaPlugin(Star):
         self, event: AstrMessageEvent, keyword: str = None, page: int = 1
     ):
         """搜索：/picasearch <关键词> [页码]"""
-        ok, msg = self._check_permission(event)
-        if not ok:
-            yield event.plain_result(msg)
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
             return
         if keyword is None or not str(keyword).strip():
             yield event.plain_result("❌ 用法: /picasearch <关键词> [页码]\n例: /picasearch 碧蓝航线")
@@ -274,6 +300,10 @@ class PicaPlugin(Star):
     @filter.command("picainfo")
     async def info_command(self, event: AstrMessageEvent, comic_id: str = None):
         """详情：/picainfo <ID>"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         if not comic_id:
             yield event.plain_result("❌ 用法: /picainfo <ID>")
             return
@@ -306,6 +336,10 @@ class PicaPlugin(Star):
     @filter.command("picaeps")
     async def episodes_command(self, event: AstrMessageEvent, comic_id: str = None):
         """章节列表：/picaeps <ID>"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         if not comic_id:
             yield event.plain_result("❌ 用法: /picaeps <ID>")
             return
@@ -328,9 +362,9 @@ class PicaPlugin(Star):
         - /picadl <ID> <章节号>   单章节下载（同步）
         - /picadl <ID>            整本下载（后台任务，完成后通知）
         """
-        ok, msg = self._check_permission(event)
-        if not ok:
-            yield event.plain_result(msg)
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
             return
         if not comic_id:
             yield event.plain_result(
@@ -375,17 +409,17 @@ class PicaPlugin(Star):
                     f"✅ 第{ep_order}话下载完成，共 {len(images)} 张"
                 )
                 # 发送（按打包格式）
-                await self._send_download_result(
-                    event, comic_id, title, f"第{ep_order}话",
-                    images[0].parent, token,
+                chain = await self._build_download_result(
+                    comic_id, title, f"第{ep_order}话", images[0].parent, token,
                 )
+                yield event.chain_result(chain.chain)
                 return
 
             # ---------- 整本下载（后台任务） ----------
             key = (self._uid(event), comic_id)
             if key in self._all_download_tasks and not self._all_download_tasks[key].done():
                 yield event.plain_result(
-                    f"⏳ 该本子正在整本下载中，请勿重复请求"
+                    "⏳ 该本子正在整本下载中，请勿重复请求"
                 )
                 return
 
@@ -467,7 +501,7 @@ class PicaPlugin(Star):
             packs_dir = self.data_dir / PACKS_DIR
 
             # 按大小分批打包发送，避免单文件过大被 QQ 拒绝（rich media transfer failed）
-            batch_mb = int(self.config.get("send_batch_mb", 20) or 0)
+            batch_mb = int(self.config.get("send_batch_mb", 500) or 0)
             batches = self._batch_episode_dirs(root_dir, batch_mb)
             if not batches:
                 await self.context.send_message(
@@ -485,7 +519,10 @@ class PicaPlugin(Star):
                     shutil.move(str(d), str(tmp_batch / d.name))
                 try:
                     batch_name = safe_name if total_batches == 1 else f"{safe_name}_part{idx}"
-                    result = packer.pack(tmp_batch, batch_name, packs_dir)
+                    # 打包是 CPU/IO 密集操作，丢到线程池避免阻塞事件循环
+                    result = await asyncio.to_thread(
+                        packer.pack, tmp_batch, batch_name, packs_dir
+                    )
                 finally:
                     for d in batch:
                         shutil.move(str(tmp_batch / d.name), str(root_dir / d.name))
@@ -613,16 +650,15 @@ class PicaPlugin(Star):
                 await asyncio.sleep(2 * (attempt + 1))
         return False
 
-    async def _send_download_result(
+    async def _build_download_result(
         self,
-        event: AstrMessageEvent,
         comic_id: str,
         title: str,
         ep_label: str,
         ep_dir: Path,
         token: str,
-    ) -> None:
-        """单章节下载结果按打包格式发送"""
+    ) -> MessageChain:
+        """单章节下载结果按打包格式构造消息链（返回 MessageChain 而非异步生成器）"""
         pack_format = str(self.config.get("pack_format", "zip") or "zip").lower()
         total = len(list(ep_dir.glob("*")))
 
@@ -632,8 +668,7 @@ class PicaPlugin(Star):
             remaining = total - len(images)
             tail = f"\n……等共 {total} 张" if remaining > 0 else ""
             comps.append(Comp.Plain(f"✅ [{title}] - {ep_label} 下载完成，共 {total} 张{tail}"))
-            yield event.chain_result(MessageChain(comps).chain)
-            return
+            return MessageChain(comps)
 
         packer = PicaPacker(
             pack_format,
@@ -641,11 +676,13 @@ class PicaPlugin(Star):
         )
         safe_name = self._safe_filename(f"{title}_{ep_label}")
         packs_dir = self.data_dir / PACKS_DIR
-        result = packer.pack(ep_dir, safe_name, packs_dir)
+        # 打包是 CPU/IO 密集操作，丢到线程池避免阻塞事件循环
+        result = await asyncio.to_thread(packer.pack, ep_dir, safe_name, packs_dir)
 
         if not result.success or not result.output_path:
-            yield event.plain_result(f"❌ 打包失败 ({pack_format}): {result.error_message}")
-            return
+            return MessageChain(
+                [Comp.Plain(f"❌ 打包失败 ({pack_format}): {result.error_message}")]
+            )
 
         out_path = result.output_path
         suffix = out_path.suffix.lower()
@@ -655,20 +692,22 @@ class PicaPlugin(Star):
         text = "\n".join(texts)
 
         if pack_format == "long_img" and suffix == ".png":
-            chain = MessageChain([Comp.Image(file=str(out_path)), Comp.Plain(text)])
-        elif suffix in (".zip", ".pdf", ".png"):
-            chain = MessageChain(
+            return MessageChain([Comp.Image(file=str(out_path)), Comp.Plain(text)])
+        if suffix in (".zip", ".pdf", ".png"):
+            return MessageChain(
                 [Comp.File(name=out_path.name, file=str(out_path)), Comp.Plain(text)]
             )
-        else:
-            chain = MessageChain([Comp.Plain(f"{text}\n📁 {out_path}")])
-        yield event.chain_result(chain.chain)
+        return MessageChain([Comp.Plain(f"{text}\n📁 {out_path}")])
 
     # ---------- 排行榜 ----------
 
     @filter.command("picarank")
     async def rank_command(self, event: AstrMessageEvent, tt: str = "H24"):
         """排行榜：/picarank [H24|D7|D30]"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         tt = str(tt).strip().upper()
         if tt not in ("H24", "D7", "D30"):
             tt = "H24"
@@ -689,6 +728,10 @@ class PicaPlugin(Star):
         self, event: AstrMessageEvent, category: str = None, page: int = 1
     ):
         """分区浏览：/picacomics <分区名> [页码]"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         if not category:
             yield event.plain_result(MessageFormatter.format_categories())
             return
@@ -735,6 +778,10 @@ class PicaPlugin(Star):
     @filter.command("picacat")
     async def categories_command(self, event: AstrMessageEvent):
         """分区列表"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         yield event.plain_result(MessageFormatter.format_categories())
 
     # ---------- 收藏 ----------
@@ -742,6 +789,10 @@ class PicaPlugin(Star):
     @filter.command("picafav")
     async def favourite_command(self, event: AstrMessageEvent, comic_id: str = None):
         """收藏/取消收藏：/picafav <ID>"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         if not comic_id:
             yield event.plain_result("❌ 用法: /picafav <ID>")
             return
@@ -759,6 +810,10 @@ class PicaPlugin(Star):
     @filter.command("picamyfav")
     async def my_favourite_command(self, event: AstrMessageEvent, page: int = 1):
         """我的收藏：/picamyfav [页码]"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         try:
             page = max(1, int(page))
         except (ValueError, TypeError):
@@ -778,6 +833,10 @@ class PicaPlugin(Star):
     @filter.command("picapunch")
     async def punch_command(self, event: AstrMessageEvent):
         """每日签到领币"""
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         try:
             token = await self._auth_token(self._uid(event))
             data = await self.client.punch_in(token)
@@ -797,6 +856,10 @@ class PicaPlugin(Star):
         - /picaclean            清空全部缓存与打包产物
         - /picaclean <天数>     只清理 N 天前的缓存
         """
+        denied = self._guard(event)
+        if denied:
+            yield event.plain_result(denied)
+            return
         cache_dir = self.downloader.cache_dir()
         try:
             if days is not None and str(days).strip():

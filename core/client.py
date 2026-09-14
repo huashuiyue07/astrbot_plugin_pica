@@ -6,13 +6,13 @@ Pica API 客户端
 """
 
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import json
 import time
 
 import aiohttp
-
 from astrbot.api import logger
 
 from .constants import (
@@ -23,10 +23,18 @@ from .constants import (
     APP_PLATFORM,
     APP_UUID,
     APP_VERSION,
+    AUTH_ERROR_CODES,
     BASE_URL,
     NONCE,
     SECRET_KEY,
     USER_AGENT,
+)
+
+# 当前请求上下文对应的 user_id（main.py 通过 set_current_user 注入，供自动重登回调使用）。
+# 用 contextvar 而非实例属性：asyncio.create_task / 并发协程各自持有独立 context，
+# 多个用户并发请求时不会互相覆盖 user_id。
+_current_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "pica_current_user", default=None
 )
 
 
@@ -57,12 +65,34 @@ class PicaClient:
         self.proxy_url = proxy_url
         self.max_retry = max_retry
         self.timeout = timeout
-        # 当服务器返回 401/1005 时调用此回调，期望返回新 token（异步）。
+        # 当服务器返回 401/认证错误码时调用此回调，期望返回新 token（异步）。
         # main.py 中由 PicaAuthManager.force_relogin 实现，
         # 自动用绑定的账号密码重新登录。
         self.on_token_invalid = on_token_invalid
-        # 当前请求的 user_id（main.py 在 ensure_login 后设置，供 callback 使用）
-        self._current_user_id: str | None = None
+        # 复用的 aiohttp 会话（连接池 + keep-alive），懒创建，插件卸载时 aclose()
+        self._session: aiohttp.ClientSession | None = None
+
+    # ---------- 会话管理 ----------
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """获取（懒创建）复用的 aiohttp 会话，复用连接池与 keep-alive"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def aclose(self) -> None:
+        """释放复用的会话连接（插件卸载/重载时调用）"""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    def set_current_user(self, user_id: str | None) -> None:
+        """把当前请求上下文对应的 user_id 注入（供自动重登回调使用）"""
+        _current_user.set(user_id)
+
+    def get_current_user(self) -> str | None:
+        """获取当前上下文对应的 user_id"""
+        return _current_user.get()
 
     # ---------- 签名 ----------
 
@@ -115,23 +145,23 @@ class PicaClient:
         if self.use_proxy and self.proxy_url:
             kwargs["proxy"] = self.proxy_url
 
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, data=body, **kwargs) as resp:
-                text = await resp.text()
-                try:
-                    result = json.loads(text)
-                except json.JSONDecodeError:
-                    raise PicaError(f"响应解析失败 (HTTP {resp.status})", resp.status)
+        session = self._get_session()
+        async with session.request(method, url, data=body, **kwargs) as resp:
+            text = await resp.text()
+            try:
+                result = json.loads(text)
+            except json.JSONDecodeError:
+                raise PicaError(f"响应解析失败 (HTTP {resp.status})", resp.status)
 
         code = result.get("code", -1)
         if code != 200:
             msg = result.get("message", "未知错误")
             error = result.get("error", "")
             # 认证失败：token 失效/错误，自动重新登录一次
-            if error in ("1005", "1008") or resp.status == 401:
+            if resp.status == 401 or str(error).strip() in AUTH_ERROR_CODES:
                 if self.on_token_invalid and _retry == 0:
                     try:
-                        new_token = await self.on_token_invalid(self._current_user_id)
+                        new_token = await self.on_token_invalid(self.get_current_user())
                         if new_token:
                             return await self._request(
                                 method, path, data, new_token, _retry=_retry + 1
@@ -165,18 +195,18 @@ class PicaClient:
             kwargs["proxy"] = self.proxy_url
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, **kwargs) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    if resp.status == 401:
-                        raise PicaAuthError("图片下载认证失败，token 可能已失效")
-                    if resp.status >= 500 and _retry < self.max_retry:
-                        await asyncio.sleep(1 + _retry)
-                        return await self._download(
-                            url, token, timeout, _retry=_retry + 1
-                        )
-                    raise PicaError(f"图片下载失败 (HTTP {resp.status})", resp.status)
+            session = self._get_session()
+            async with session.get(url, **kwargs) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                if resp.status == 401:
+                    raise PicaAuthError("图片下载认证失败，token 可能已失效")
+                if resp.status >= 500 and _retry < self.max_retry:
+                    await asyncio.sleep(1 + _retry)
+                    return await self._download(
+                        url, token, timeout, _retry=_retry + 1
+                    )
+                raise PicaError(f"图片下载失败 (HTTP {resp.status})", resp.status)
         except asyncio.TimeoutError:
             if _retry < self.max_retry:
                 await asyncio.sleep(1 + _retry)
