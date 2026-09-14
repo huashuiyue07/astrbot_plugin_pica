@@ -64,13 +64,23 @@ def _detect_image_ext(path: Path) -> str:
 def _image_to_pdf_bytes(path: Path) -> bytes:
     """图片 → PDF bytes。
 
-    pica 部分图片真实格式是 WEBP 但文件名是 .jpg，fitz 直接打开会失败；
-    这里用 Pillow（按文件头识别真实格式）解码 → 内存 PNG → fitz 转 PDF，
-    完全绕开扩展名与文件句柄问题。
+    pica 部分图片真实格式是 WEBP 但文件名是 .jpg，fitz 直接打开会失败。
+    优先按文件头嗅探真实格式：真 JPEG/PNG/GIF 直接交给 fitz（原生支持，
+    避免整图走 PNG 中转的内存开销）；其余格式（如 WEBP）才用 Pillow
+    解码 → 内存 PNG → fitz 转 PDF。
     """
-    import io
+    ext = _detect_image_ext(path)
+    if ext in (".jpg", ".jpeg", ".png", ".gif"):
+        try:
+            img = fitz.open(str(path))
+            try:
+                return img.convert_to_pdf()
+            finally:
+                img.close()
+        except Exception:
+            pass  # 个别文件依然打不开时回退到 Pillow 解码
 
-    from PIL import Image
+    import io
 
     with Image.open(path) as im:
         im = im.convert("RGB")

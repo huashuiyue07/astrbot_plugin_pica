@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# E/F: 语法与未用变量等；I: import 排序。其余风格类规则（RUF/B/S 等）不强制，
+# 避免把大量可读性偏好塞进老代码。
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
