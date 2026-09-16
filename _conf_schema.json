@@ -89,6 +89,12 @@
     "hint": "整本打包后超过该大小会按章节分批打包发送，避免文件过大被QQ拒绝；0表示不分批",
     "default": 500
   },
+  "send_api_timeout": {
+    "type": "int",
+    "description": "大文件上传的OneBot API超时(秒)",
+    "hint": "发送图片/文件前会把 OneBot API 调用超时抬到不低于该值，避免大文件上传被判超时（进而重复发送）；框架默认 180，0 表示不改动",
+    "default": 900
+  },
   "progress_step_pct": {
     "type": "int",
     "description": "整本下载进度提示间隔(%)",

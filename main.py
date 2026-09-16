@@ -33,12 +33,27 @@ MAX_SEND_IMAGES = 10
 # 整本下载打包目录
 PACKS_DIR = "packs"
 
+# 发送前需要「上传本地文件到 QQ 服务器」的组件类型。
+# 这类消息的发送耗时随文件体积增长，客户端等待超时**不代表消息未送达**
+# （napcat 会把文件传完再投递），因此绝不能按「失败」重发，否则用户收到两份。
+UPLOAD_COMPONENT_TYPES: tuple[type, ...] = (
+    Comp.File,
+    Comp.Image,
+    Comp.Video,
+    Comp.Record,
+)
+
+# 发送上传类消息前，把 OneBot API 调用超时抬到不低于该秒数。
+# AstrBot 的 aiocqhttp 适配器把该值硬编码为 180s，而默认单包上限 500MB，
+# 大文件上传很容易超过 180s 从而触发上面的「假失败」。0 表示不改动。
+DEFAULT_API_TIMEOUT_SEC = 900
+
 
 @register(
     "astrbot_plugin_pica",
     "huashuiyue07",
     "哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持整本下载与打包",
-    "1.4.0",
+    "1.4.1",
     "https://github.com/huashuiyue07/astrbot_plugin_pica",
 )
 class PicaPlugin(Star):
@@ -412,6 +427,8 @@ class PicaPlugin(Star):
                 chain = await self._build_download_result(
                     comic_id, title, f"第{ep_order}话", images[0].parent, token,
                 )
+                # 单章节同样可能要上传大文件，先抬高 OneBot API 超时
+                self._ensure_api_timeout(event)
                 yield event.chain_result(chain.chain)
                 return
 
@@ -511,6 +528,7 @@ class PicaPlugin(Star):
 
             total_batches = len(batches)
             sent_ok = 0
+            uncertain = 0
             for idx, batch in enumerate(batches, 1):
                 # 该批章节临时移入独立目录打包，避免混入其他批次
                 tmp_batch = root_dir / ".batch_tmp"
@@ -567,8 +585,13 @@ class PicaPlugin(Star):
                 else:
                     chain = MessageChain([Comp.Plain(f"{text}\n📁 {out_path}")])
 
-                if await self._send_with_retry(umo, chain):
+                send_result = await self._send_with_retry(event, umo, chain)
+                if send_result is True:
                     sent_ok += 1
+                elif send_result is None:
+                    # 上传超时：文件很可能已经送达，不再重发（重发=用户收到两份），
+                    # 也不谎报失败，仅在最后统一提示一次。
+                    uncertain += 1
                 else:
                     await self.context.send_message(
                         umo,
@@ -580,13 +603,24 @@ class PicaPlugin(Star):
                         ),
                     )
 
-            if sent_ok == 0 and total_batches > 1:
+            if sent_ok == 0 and uncertain == 0 and total_batches > 1:
                 await self.context.send_message(
                     umo,
                     MessageChain(
                         [Comp.Plain(
                             f"⚠️ [{title}] 整本下载完成，共 {total} 章，"
                             f"但所有批次发送失败，文件保存在: {packs_dir}"
+                        )]
+                    ),
+                )
+            elif uncertain:
+                await self.context.send_message(
+                    umo,
+                    MessageChain(
+                        [Comp.Plain(
+                            f"⚠️ [{title}] 有 {uncertain} 个分包含上传超时，无法确认是否已送达。"
+                            f"请先确认是否收到，未收到再用 /picadl 重试，"
+                            f"或直接取本地文件: {packs_dir}"
                         )]
                     ),
                 )
@@ -637,16 +671,80 @@ class PicaPlugin(Star):
             batches.append(cur)
         return batches
 
-    async def _send_with_retry(self, umo, chain, retries: int = 2) -> bool:
-        """发送消息，失败重试（用于发送大文件时应对偶发失败）"""
-        for attempt in range(retries + 1):
+    @staticmethod
+    def _has_upload_components(chain: MessageChain) -> bool:
+        """消息链中是否含需要上传本地文件的组件（图片/文件/语音/视频）"""
+        comps = getattr(chain, "chain", None) or []
+        return any(isinstance(c, UPLOAD_COMPONENT_TYPES) for c in comps)
+
+    @staticmethod
+    def _is_api_timeout(err: BaseException) -> bool:
+        """异常是否为 OneBot API 调用超时（消息可能已送达的不确定态）"""
+        text = f"{type(err).__name__}: {err}".lower()
+        return "timeout" in text or "超时" in text
+
+    def _ensure_api_timeout(self, event: AstrMessageEvent | None) -> None:
+        """把 OneBot API 调用超时抬到配置值以上，避免大文件上传被判超时。
+
+        AstrBot 的 aiocqhttp 适配器把该值硬编码为 180s（见
+        `aiocqhttp_platform_adapter.py` 的 `api_timeout_sec=180`），而默认单包上限
+        500MB，上传常常超过 180s。这里在发送前原地抬高该值。
+
+        - 只增不减，因而幂等，并发调用不会把别人的超时改小
+        - 任何内部结构变动只会让本方法静默失效，不影响发送本身
+        """
+        want = int(self.config.get("send_api_timeout", DEFAULT_API_TIMEOUT_SEC) or 0)
+        if want <= 0:
+            return
+        bot = getattr(event, "bot", None)
+        api = getattr(bot, "_api", None)
+        if api is None:
+            return
+        for holder in (api, getattr(api, "_wsr_api", None), getattr(api, "_http_api", None)):
+            if holder is None:
+                continue
+            cur = getattr(holder, "_timeout_sec", None)
+            if not isinstance(cur, (int, float)) or cur >= want:
+                continue
             try:
-                ok = await self.context.send_message(umo, chain)
-                if ok:
+                holder._timeout_sec = want
+                logger.info(f"OneBot API 超时已由 {cur}s 提升至 {want}s（大文件上传）")
+            except Exception as e:
+                logger.debug(f"调整 OneBot API 超时失败: {e}")
+
+    async def _send_with_retry(
+        self,
+        event: AstrMessageEvent | None,
+        umo: str,
+        chain: MessageChain,
+        retries: int = 2,
+    ) -> bool | None:
+        """发送消息。
+
+        返回 ``True`` 已送达 / ``False`` 确认失败 / ``None`` 结果不确定（上传超时）。
+
+        ⚠️ 含上传类组件的消息链**只尝试一次**，不重试：
+        上传大文件的耗时可以超过 OneBot API 调用超时，该超时只是客户端不再等待，
+        napcat 侧仍会把文件传完并投递成功。此时若按「失败」重发，用户就会收到两份
+        文件（v1.4.1 修复的重复发送问题）。
+        """
+        upload = self._has_upload_components(chain)
+        if upload:
+            self._ensure_api_timeout(event)
+
+        attempts = 1 if upload else retries + 1
+        for attempt in range(attempts):
+            try:
+                if await self.context.send_message(umo, chain):
                     return True
             except Exception as e:
+                if upload and self._is_api_timeout(e):
+                    logger.warning(
+                        f"上传消息超时（不代表未送达，已放弃重发以免重复）: {e}"
+                    )
+                    return None
                 logger.warning(f"发送消息失败(第{attempt + 1}次): {e}")
-            if attempt < retries:
+            if attempt < attempts - 1:
                 await asyncio.sleep(2 * (attempt + 1))
         return False
 
