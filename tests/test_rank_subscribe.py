@@ -604,6 +604,36 @@ def test_cover_pdf_disabled_by_default_in_push(tmp_path):
     assert plugin.context.files_for(UMO_A) == []
 
 
+def test_push_builds_cover_pdf_once_for_all_groups(tmp_path):
+    """N 个订阅会话只打包一次 PDF，逐个会话复用同一份文件"""
+    pytest.importorskip("fitz")
+    plugin = _make_plugin(
+        tmp_path,
+        {**H24_ON_SCHEDULE, "rank_cover_pdf": True},
+        boards={"H24": _comics("a", "b", with_thumb=True)},
+        bound={"u1": "tk"},
+    )
+    plugin.subs.add(UMO_A, "H24", "u1")
+    plugin.subs.add(UMO_B, "H24", "u1")
+
+    builds = []
+    real_build = plugin._build_rank_cover_pdf
+
+    async def _counting_build(comics, token, tt):
+        builds.append(tt)
+        return await real_build(comics, token, tt)
+
+    plugin._build_rank_cover_pdf = _counting_build
+
+    assert _fire(plugin) == 2
+
+    assert builds == ["H24"], "只应构建一次封面 PDF"
+    files_a = plugin.context.files_for(UMO_A)
+    files_b = plugin.context.files_for(UMO_B)
+    assert len(files_a) == 1 and len(files_b) == 1
+    assert files_a[0].kwargs["file"] == files_b[0].kwargs["file"], "两个群复用同一份 PDF"
+
+
 # ------------------------------------------------------------- 后台任务生命周期
 
 

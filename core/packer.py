@@ -235,6 +235,8 @@ class PicaPacker:
             )
 
         output_path = output_dir / f"{output_name}.pdf"
+        # 先写临时文件再原子替换：并发打包同名文件时不会有人读到半成品
+        tmp_path = output_path.with_name(output_path.name + ".tmp")
 
         try:
             image_files = _collect_images_sorted(source_dir)
@@ -248,36 +250,39 @@ class PicaPacker:
                 )
 
             doc = fitz.open()
-            for img_path in image_files:
-                try:
-                    pdfbytes = _image_to_pdf_bytes(img_path)
-                    imgpdf = fitz.open("pdf", pdfbytes)
-                    doc.insert_pdf(imgpdf)
-                    imgpdf.close()
-                except Exception:
-                    continue
+            try:
+                for img_path in image_files:
+                    try:
+                        pdfbytes = _image_to_pdf_bytes(img_path)
+                        imgpdf = fitz.open("pdf", pdfbytes)
+                        doc.insert_pdf(imgpdf)
+                        imgpdf.close()
+                    except Exception:
+                        continue
 
-            if doc.page_count == 0:
+                if doc.page_count == 0:
+                    return PackResult(
+                        success=False,
+                        output_path=None,
+                        format="pdf",
+                        encrypted=False,
+                        error_message="无法创建PDF页面",
+                    )
+
+                if self.password:
+                    doc.save(
+                        tmp_path,
+                        encryption=fitz.PDF_ENCRYPT_AES_256,
+                        owner_pw=self.password,
+                        user_pw=self.password,
+                        permissions=fitz.PDF_PERM_ACCESSIBILITY,
+                    )
+                else:
+                    doc.save(tmp_path)
+            finally:
                 doc.close()
-                return PackResult(
-                    success=False,
-                    output_path=None,
-                    format="pdf",
-                    encrypted=False,
-                    error_message="无法创建PDF页面",
-                )
 
-            if self.password:
-                doc.save(
-                    output_path,
-                    encryption=fitz.PDF_ENCRYPT_AES_256,
-                    owner_pw=self.password,
-                    user_pw=self.password,
-                    permissions=fitz.PDF_PERM_ACCESSIBILITY,
-                )
-            else:
-                doc.save(output_path)
-            doc.close()
+            os.replace(tmp_path, output_path)
 
             return PackResult(
                 success=True,
@@ -286,6 +291,11 @@ class PicaPacker:
                 encrypted=bool(self.password),
             )
         except Exception as e:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
             return PackResult(
                 success=False,
                 output_path=None,
