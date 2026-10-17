@@ -1,7 +1,7 @@
 # 手工测试用例（v1.4.2 / v1.4.3 新增功能）
 
 本文件覆盖 `new-feature` 分支相对上游 `main` 的全部新增能力，供发起 PR 前手工验收。
-自动化测试（`pytest`，178 例）已覆盖逻辑分支，但下面这些**只有真实 QQ 环境才能验证**：
+自动化测试（`pytest`，208 例）已覆盖逻辑分支，但下面这些**只有真实 QQ 环境才能验证**：
 消息的真实送达形态、封面/PDF 渲染效果、cron 实际触发时刻、跨进程持久化与重启行为。
 
 - 目标版本：**v1.4.3**（含 v1.4.2 的排行榜封面 PDF）
@@ -104,8 +104,9 @@
 | D11 | 推送内容含封面 PDF | `rank_cover_pdf=true` + H24 订阅 | 等到命中 | 推送里包含榜单文本与 `排行榜封面_H24.pdf` |
 | D12 | 长榜单+封面 PDF 组合 | `page_size=30` + `rank_cover_pdf=true` | 等到命中 | 榜单文本形态见 F 组；PDF 页数为 `rank_push_size`（未配置时等于 `page_size`） |
 
-> 边界路径（空榜单跳过、部分会话失败只计成功数、`/picasub` 非法参数不写订阅）
-> 由自动化测试覆盖：`tests/test_rank_subscribe.py`、`tests/test_rank_debug.py`。
+> 边界路径（空榜单跳过、部分会话失败只计成功数、`/picasub` 非法参数不写订阅、
+> cron 的 `a/n` 步进语义）由自动化测试覆盖：`tests/test_rank_subscribe.py`、
+> `tests/test_rank_debug.py`、`tests/test_cron.py`。
 
 ---
 
@@ -168,4 +169,4 @@ ruff check main.py core tests conftest.py
 pytest -q
 ```
 
-预期：`ruff` 无输出（All checks passed）、`pytest` 全部通过（当前 178 例）。
+预期：`ruff` 无输出（All checks passed）、`pytest` 全部通过（当前 208 例）。
