@@ -22,6 +22,7 @@
 | 配置 | 默认 | 本文件用到的取值 |
 |---|---|---|
 | `page_size` | 10 | 2 / 10 / 30 |
+| `rank_push_size` | 0（跟随 `page_size`） | 不改 / 5 |
 | `rank_cover_pdf` | false | true |
 | `rank_new_highlight` | true | false |
 | `rank_cron_h24` | `0 9 * * *` | `*/2 * * * *`（2 分钟一次，便于验证） |
@@ -77,7 +78,7 @@
 | C5 | 取消订阅 | 接 C2 | 发 `/picasub off` | 回复「已取消本群的排行榜订阅：日榜(24H)、周榜(7D)…」；再发 `/picasub off` 回复「本群当前没有排行榜订阅」 |
 | C6 | 未配置刷新时间时告警 | `rank_cron_h24=""` | 发 `/picasub H24` | 回复带 `⚠️ 未配置刷新时间（rank_cron_h24），订阅后不会推送` |
 | C7 | cron 非法时告警 | `rank_cron_h24="每天九点"` | 发 `/picasub H24` | 回复带 `⚠️ 刷新时间配置有误`，不崩溃；日志出现一次非法表达式告警 |
-| C8 | 参数非法回落日榜 | 接 C1 | 发 `/picasub 不存在的榜单` | 与 `/picarank` 一致回落到日榜并明确写出订阅了哪一项 |
+| C8 | 参数非法只报用法 | 接 C1 | 发 `/picasub 不存在的榜单`、`/picasub H2` | 回复用法提示；`rank_subscriptions.json` 里**没有**新增订阅（不再静默订阅日榜） |
 | C9 | 会话隔离 | 两个测试群 | 群 1 发 `/picasub H24`，群 2 发 `/picasub D7`，各自 `/picasub list` | 两群互不影响；`rank_subscriptions.json` 里两条独立记录 |
 | C10 | 仅管理员模式生效 | `admin_only=true`、`admin_ids` 不含当前用户 | 发 `/picasub` | 回复「你没有权限使用此插件」，且不写入订阅 |
 | C11 | 订阅持久化 | 接 C1 | 重启 AstrBot 后 `/picasub list` | 订阅关系仍在 |
@@ -101,7 +102,10 @@
 | D9 | 无可用账号时跳过 | 订阅者未绑定，且**没有**默认账号 | 等到命中 | 不崩溃；日志出现「排行榜定时推送缺少可用账号，本次跳过」；其他榜单/其他群不受影响 |
 | D10 | 与手动命令共享快照 | 先手动 `/picarank` 一次 | 等到 D1 命中 | 定时推送**不会**重复报同一批「新上榜」（两次共享同一份快照） |
 | D11 | 推送内容含封面 PDF | `rank_cover_pdf=true` + H24 订阅 | 等到命中 | 推送里包含榜单文本与 `排行榜封面_H24.pdf` |
-| D12 | 长榜单+封面 PDF 组合 | `page_size=30` + `rank_cover_pdf=true` | 等到命中 | 榜单文本形态见 F 组；PDF 页数为 `page_size` |
+| D12 | 长榜单+封面 PDF 组合 | `page_size=30` + `rank_cover_pdf=true` | 等到命中 | 榜单文本形态见 F 组；PDF 页数为 `rank_push_size`（未配置时等于 `page_size`） |
+
+> 边界路径（空榜单跳过、部分会话失败只计成功数、`/picasub` 非法参数不写订阅）
+> 由自动化测试覆盖：`tests/test_rank_subscribe.py`、`tests/test_rank_debug.py`。
 
 ---
 

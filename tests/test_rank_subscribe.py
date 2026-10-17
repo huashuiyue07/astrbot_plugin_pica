@@ -114,14 +114,18 @@ class _FakeAuth:
 
 
 class _FakeContext:
-    def __init__(self, fail_for=()):
+    def __init__(self, fail_for=(), false_for=()):
         self.calls = []  # (umo, chain)
         self.fail_for = set(fail_for)
+        # 模拟「找不到平台实例」：Context.send_message 返回 False 而不抛异常
+        self.false_for = set(false_for)
 
     async def send_message(self, umo, chain):
         self.calls.append((umo, chain))
         if umo in self.fail_for:
             raise RuntimeError("send failed")
+        if umo in self.false_for:
+            return False
         return True
 
     def texts_for(self, umo):
@@ -238,10 +242,23 @@ def test_picasub_is_idempotent(tmp_path):
     assert "早已订阅" in _reply(event)
 
 
-def test_picasub_invalid_arg_falls_back_to_h24(tmp_path):
+def test_picasub_invalid_arg_shows_usage_without_subscribing(tmp_path):
+    """打错字不能静默订阅日榜 —— 参数非法时报用法，且不写持久化订阅"""
     plugin = _make_plugin(tmp_path, H24_ON_SCHEDULE)
 
-    _run_sub(plugin, _FakeEvent(), "不存在的榜单")
+    event = _FakeEvent()
+    _run_sub(plugin, event, "不存在的榜单")
+
+    assert "用法" in _reply(event)
+    assert plugin.subs.targets(UMO_A) == []
+    assert plugin.subs.all() == {}
+
+
+def test_picasub_without_arg_still_subscribes_h24(tmp_path):
+    """无参数仍是订阅日榜（与 /picarank 的默认一致）"""
+    plugin = _make_plugin(tmp_path, H24_ON_SCHEDULE)
+
+    _run_sub(plugin, _FakeEvent())
 
     assert plugin.subs.targets(UMO_A) == ["H24"]
 
@@ -505,7 +522,8 @@ def test_leaderboard_error_does_not_break_scheduler(tmp_path):
     assert _fire(plugin) == 0
 
 
-def test_send_failure_does_not_break_other_groups(tmp_path):
+def test_partial_send_failure_counts_only_delivered(tmp_path):
+    """一个会话发送失败时，只把真正提交成功的会话计入推送数"""
     plugin = _make_plugin(
         tmp_path,
         H24_ON_SCHEDULE,
@@ -516,9 +534,45 @@ def test_send_failure_does_not_break_other_groups(tmp_path):
     plugin.subs.add(UMO_B, "H24", "u1")
     plugin.context = _FakeContext(fail_for={UMO_A})
 
-    assert _fire(plugin) == 2
+    assert _fire(plugin) == 1
 
     assert plugin.context.texts_for(UMO_B)
+
+
+def test_empty_board_is_not_broadcast(tmp_path):
+    """空榜单（HTTP 200 但无数据）不该广播给所有订阅群"""
+    plugin = _make_plugin(
+        tmp_path, H24_ON_SCHEDULE, boards={"H24": []}, bound={"u1": "tk"}
+    )
+    plugin.subs.add(UMO_A, "H24", "u1")
+
+    assert _fire(plugin) == 0
+
+    assert plugin.context.calls == [], "空榜单不应发出任何消息"
+    assert plugin.client.fetches, "仍应拉取过一次榜单"
+
+
+def test_notify_returns_true_on_success(tmp_path):
+    plugin = _make_plugin(tmp_path, H24_ON_SCHEDULE)
+
+    assert asyncio.run(plugin._notify(UMO_A, "hi")) is True
+
+
+def test_notify_returns_false_when_platform_missing(tmp_path):
+    """Context.send_message 返回 False（找不到平台实例）时不能算成功"""
+    plugin = _make_plugin(tmp_path, H24_ON_SCHEDULE)
+    plugin.context = _FakeContext(false_for={UMO_A})
+
+    assert asyncio.run(plugin._notify(UMO_A, "hi")) is False
+
+
+def test_push_outcome_failed_property():
+    PushOutcome = main.PushOutcome
+
+    assert PushOutcome(attempted=3, delivered=3).failed == 0
+    assert PushOutcome(attempted=3, delivered=1).failed == 2
+    # 整批跳过时没有真的尝试，不算失败
+    assert PushOutcome(attempted=3, delivered=0, skipped="榜单为空").failed == 0
 
 
 def test_push_sends_cover_pdf_when_enabled(tmp_path):
