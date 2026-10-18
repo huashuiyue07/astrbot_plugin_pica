@@ -82,11 +82,17 @@ class RankSubscriptionStore:
         return str(self._read().get(umo, {}).get("owner_id") or "")
 
     def groups_for(self, tt: str) -> list[str]:
-        """订阅了该榜单类型的全部会话（顺序稳定，便于测试与日志）"""
+        """订阅了该榜单类型的全部会话（顺序稳定，便于测试与日志）
+
+        只读一次文件再在内存里筛：此前每个元素都会走一次 ``targets()``，
+        相当于把整个 JSON 读 n+1 遍。
+        """
         tt = str(tt).strip().upper()
-        return [
-            umo for umo, _record in sorted(self._read().items()) if tt in self.targets(umo)
-        ]
+        groups: list[str] = []
+        for umo, record in sorted(self._read().items()):
+            if tt in self._norm_targets(record.get("targets")):
+                groups.append(umo)
+        return groups
 
     # ---------- 写入 ----------
 

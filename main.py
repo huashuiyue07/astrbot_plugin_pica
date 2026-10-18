@@ -9,6 +9,7 @@ Pica-Comics - AstrBot 哔咔漫画插件
 import asyncio
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -66,11 +67,50 @@ DEFAULT_FORWARD_THRESHOLD = 1500
 RANK_SUB_TICK_SEC = 30
 
 
+@dataclass
+class PushOutcome:
+    """一次「按榜单类型推送」的结果。
+
+    Attributes:
+        attempted: 计划推送的会话数
+        delivered: 榜单文本已提交给平台的会话数
+            （封面 PDF 属附加内容，失败只记日志，不影响该计数）
+        skipped: 整批被跳过的原因（榜单为空 / 无可用账号 / 拉取失败），
+            非空时 ``delivered`` 必为 0
+    """
+
+    attempted: int = 0
+    delivered: int = 0
+    skipped: str = ""
+
+    @property
+    def failed(self) -> int:
+        """确认失败的会话数（被跳过时算 0，因为没有真的尝试发送）"""
+        if self.skipped:
+            return 0
+        return max(0, self.attempted - self.delivered)
+
+
+@dataclass
+class RankCoverPack:
+    """一次排行榜封面 PDF 的构建结果，供多个会话复用。
+
+    Attributes:
+        path: 生成的 PDF 路径；构建失败时为 None
+        cover_count: 成功下载的封面张数
+        error: 构建失败的原因
+    """
+
+    path: Path | None = None
+    cover_count: int = 0
+    error: str = ""
+
+
 @register(
     "astrbot_plugin_pica",
     "huashuiyue07",
     "哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持整本下载与打包",
-    "1.4.5",
+    "1.4.6",
     "https://github.com/huashuiyue07/astrbot_plugin_pica",
 )
 class PicaPlugin(Star):
@@ -899,18 +939,6 @@ class PicaPlugin(Star):
             )
         return texts
 
-    async def _maybe_send_rank_cover_pdf(
-        self,
-        umo: str,
-        comics: list,
-        token: str,
-        tt: str,
-        event: AstrMessageEvent | None = None,
-    ) -> None:
-        """按配置决定是否附带排行榜封面 PDF（rank_cover_pdf，默认关闭）"""
-        if comics and self.config.get("rank_cover_pdf", False):
-            await self._send_rank_cover_pdf(umo, comics, token, tt, event)
-
     @filter.command("picarank")
     async def rank_command(self, event: AstrMessageEvent, tt: str = "H24"):
         """排行榜：/picarank [H24|D7|D30]"""
@@ -931,12 +959,20 @@ class PicaPlugin(Star):
         except PicaError as e:
             yield event.plain_result(f"❌ 获取排行榜失败: {e}")
 
-    async def _notify(self, umo: str, text: str) -> None:
-        """尽力发送一条纯文本提示：失败只记日志，不影响调用方流程"""
+    async def _notify(self, umo: str, text: str) -> bool:
+        """尽力发送一条纯文本消息。
+
+        Returns:
+            是否已**提交给平台**。``Context.send_message`` 在找不到会话对应的
+            平台实例时返回 ``False``（不抛异常），协议端内部的静默失败不在此保证内。
+        """
         chain: MessageChain | None = None
         try:
             chain = await self._build_notify_chain(umo, text)
-            await self.context.send_message(umo, chain)
+            ok = await self.context.send_message(umo, chain)
+            if not ok:
+                logger.debug(f"未找到会话 {umo} 对应的平台实例，消息未发送")
+            return bool(ok)
         except Exception as e:
             if chain is not None and any(
                 isinstance(comp, Comp.Node) for comp in chain.chain
@@ -945,6 +981,7 @@ class PicaPlugin(Star):
                 logger.warning(f"合并转发发送失败: {e}")
             else:
                 logger.debug(f"发送提示消息失败: {e}")
+            return False
 
     @staticmethod
     def _umo_platform_id(umo: str) -> str:
@@ -1041,7 +1078,7 @@ class PicaPlugin(Star):
         )
         return MessageChain([node])
 
-    async def _send_rank_cover_pdf(
+    async def _maybe_send_rank_cover_pdf(
         self,
         umo: str,
         comics: list,
@@ -1049,25 +1086,32 @@ class PicaPlugin(Star):
         tt: str,
         event: AstrMessageEvent | None = None,
     ) -> bool:
-        """下载排行榜全部封面、打包成 PDF 并发送（受 rank_cover_pdf 开关控制）。
+        """按配置决定是否附带排行榜封面 PDF（rank_cover_pdf，默认关闭）。"""
+        if not comics or not self.config.get("rank_cover_pdf", False):
+            return False
+        await self._notify(
+            umo, f"🖼️ 正在下载排行榜 {len(comics)} 张封面并生成 PDF..."
+        )
+        pack = await self._build_rank_cover_pdf(comics, token, tt)
+        if pack.path is None:
+            await self._notify(umo, f"❌ 封面 PDF 生成失败: {pack.error}")
+            return False
+        return await self._send_rank_cover_pdf_file(umo, pack, tt, event)
 
-        这是排行榜文本之外的附加内容，因此尽力而为：任一步失败只提示用户，
-        不向上抛异常，避免影响排行榜本身。
+    async def _build_rank_cover_pdf(
+        self, comics: list, token: str, tt: str
+    ) -> RankCoverPack:
+        """下载榜单全部封面并打包成 PDF（只构建、不发送）。
 
-        Returns:
-            是否确认发送成功。
+        与发送解耦，使定时推送能「构建一次、多群复用」；封面临时目录用完即清。
         """
         cover_dir: Path | None = None
         try:
-            # 每次请求用独立临时目录：并发或重复调用时封面不会互相污染
+            # 每次构建用独立临时目录：并发构建时封面不会互相污染
             cover_dir = Path(
                 tempfile.mkdtemp(
                     prefix=f"rank_{tt}_", dir=self.downloader.cache_dir()
                 )
-            )
-
-            await self._notify(
-                umo, f"🖼️ 正在下载排行榜 {len(comics)} 张封面并生成 PDF..."
             )
             covers = await self.downloader.download_covers(
                 comics,
@@ -1076,8 +1120,7 @@ class PicaPlugin(Star):
                 target_dir=cover_dir,
             )
             if not covers:
-                await self._notify(umo, "❌ 排行榜封面下载失败，未获取到任何封面")
-                return False
+                return RankCoverPack(error="未获取到任何封面")
 
             packer = PicaPacker("pdf")
             safe_name = self._safe_filename(f"排行榜封面_{tt}")
@@ -1087,38 +1130,55 @@ class PicaPlugin(Star):
                 packer.pack, cover_dir, safe_name, packs_dir
             )
             if not result.success or not result.output_path:
-                await self._notify(umo, f"❌ 封面 PDF 生成失败: {result.error_message}")
-                return False
-
-            out_path = result.output_path
-            rank_name = RANK_TYPES.get(tt, tt)
-            chain = MessageChain(
-                [
-                    Comp.File(name=out_path.name, file=str(out_path)),
-                    Comp.Plain(f"🖼️ 排行榜封面 {len(covers)} 张 ({rank_name})"),
-                ]
-            )
-            send_result = await self._send_with_retry(event, umo, chain)
-            if send_result is True:
-                return True
-            if send_result is None:
-                # 上传超时：文件很可能已送达，不再重发，也不谎报失败
-                await self._notify(
-                    umo,
-                    f"⚠️ 封面 PDF 上传超时，无法确认是否已送达，请先确认是否收到；"
-                    f"本地文件: {out_path}",
-                )
-                return False
-            await self._notify(umo, f"⚠️ 封面 PDF 发送失败，已保存在本地: {out_path}")
-            return False
+                return RankCoverPack(error=result.error_message or "PDF 生成失败")
+            return RankCoverPack(path=result.output_path, cover_count=len(covers))
         except Exception as e:
-            logger.error(f"排行榜封面 PDF 处理异常: {e}")
-            await self._notify(umo, f"⚠️ 排行榜封面 PDF 处理失败: {e}")
-            return False
+            logger.error(f"排行榜封面 PDF 构建异常: {e}")
+            return RankCoverPack(error=str(e))
         finally:
             # 封面只是 PDF 的中间产物，打包完即可清理
             if cover_dir is not None:
                 shutil.rmtree(cover_dir, ignore_errors=True)
+
+    async def _send_rank_cover_pdf_file(
+        self,
+        umo: str,
+        pack: RankCoverPack,
+        tt: str,
+        event: AstrMessageEvent | None = None,
+    ) -> bool:
+        """把已构建好的封面 PDF 发给一个会话（失败只提示，不抛异常）。
+
+        Returns:
+            是否确认发送成功。
+        """
+        out_path = pack.path
+        if out_path is None:
+            return False
+        rank_name = RANK_TYPES.get(tt, tt)
+        chain = MessageChain(
+            [
+                Comp.File(name=out_path.name, file=str(out_path)),
+                Comp.Plain(f"🖼️ 排行榜封面 {pack.cover_count} 张 ({rank_name})"),
+            ]
+        )
+        try:
+            send_result = await self._send_with_retry(event, umo, chain)
+        except Exception as e:
+            logger.warning(f"封面 PDF 发送异常: {e}")
+            return False
+        if send_result is True:
+            return True
+        if send_result is None:
+            # 上传超时：文件很可能已送达，不再重发，也不谎报失败
+            await self._notify(
+                umo,
+                f"⚠️ 封面 PDF 上传超时，无法确认是否已送达，请先确认是否收到；"
+                f"本地文件: {out_path}",
+            )
+            return False
+        await self._notify(umo, f"⚠️ 封面 PDF 发送失败，已保存在本地: {out_path}")
+        return False
 
     # ---------- 排行榜订阅（定时推送） ----------
 
@@ -1195,8 +1255,16 @@ class PicaPlugin(Star):
                 yield event.plain_result(f"🗑️ 已取消本群的排行榜订阅：{names}")
             return
 
-        # 与 /picarank 一致：参数非法时回落到日榜
-        tt = self._parse_tt(value) or "H24"
+        # /picarank 的回落是无副作用的展示行为，可以保留；这里会写持久化订阅，
+        # 因此参数非法时明确报错，不替用户决定订阅哪个榜单。
+        parsed_tt = self._parse_tt(value)
+        if value and parsed_tt is None:
+            yield event.plain_result(
+                "❌ 用法: /picasub [H24|D7|D30]\n"
+                "        /picasub list 查看本群订阅 | /picasub off 取消全部"
+            )
+            return
+        tt = parsed_tt or "H24"
         name = RANK_TYPES[tt]
         added = self.subs.add(umo, tt, self._uid(event))
         head = (
@@ -1236,7 +1304,7 @@ class PicaPlugin(Star):
         return None
 
     async def _trigger_subscriptions(self, targets: list[str]) -> tuple[int, list[str]]:
-        """无视时间触发订阅推送，返回 (推送会话数, 每个榜单的结果说明)"""
+        """无视时间触发订阅推送，返回 (已提交的会话数, 每个榜单的结果说明)"""
         sent = 0
         notes: list[str] = []
         for tt in targets:
@@ -1245,12 +1313,17 @@ class PicaPlugin(Star):
             if not groups:
                 notes.append(f"➖ {name}: 无人订阅")
                 continue
-            count = await self._push_rank_to_groups(tt, groups)
-            sent += count
-            if count:
-                notes.append(f"✅ {name}: 已推送给 {count} 个会话")
+            outcome = await self._push_rank_to_groups(tt, groups)
+            sent += outcome.delivered
+            if outcome.skipped:
+                notes.append(f"➖ {name}: 已跳过（{outcome.skipped}）")
+            elif outcome.failed:
+                notes.append(
+                    f"⚠️ {name}: 已推送给 {outcome.delivered}/{outcome.attempted} 个会话"
+                    f"（其余失败，请看日志）"
+                )
             else:
-                notes.append(f"⚠️ {name}: {len(groups)} 个订阅会话推送失败（请看日志）")
+                notes.append(f"✅ {name}: 已推送给 {outcome.delivered} 个会话")
         return sent, notes
 
     @filter.command("picadebug")
@@ -1325,14 +1398,21 @@ class PicaPlugin(Star):
             if not groups:
                 continue
             self._rank_fired[tt] = stamp
-            pushed += await self._push_rank_to_groups(tt, groups)
+            outcome = await self._push_rank_to_groups(tt, groups)
+            pushed += outcome.delivered
         return pushed
 
-    async def _push_rank_to_groups(self, tt: str, groups: list[str]) -> int:
-        """抓取一次榜单并推送给全部订阅会话（返回成功推送的会话数）"""
+    async def _push_rank_to_groups(self, tt: str, groups: list[str]) -> PushOutcome:
+        """抓取一次榜单并推送给全部订阅会话。
+
+        Returns:
+            推送结果；``skipped`` 非空表示整批跳过（榜单为空 / 无可用账号 / 拉取失败）。
+        """
+        outcome = PushOutcome(attempted=len(groups))
         identity = await self._subscription_identity(groups)
         if identity is None:
-            return 0
+            outcome.skipped = "没有可用的哔咔账号"
+            return outcome
         token, user_id = identity
         self.client.set_current_user(user_id)
         try:
@@ -1341,19 +1421,48 @@ class PicaPlugin(Star):
             )
         except Exception as e:
             logger.warning(f"定时推送 {tt} 排行榜失败: {e}")
-            return 0
+            outcome.skipped = "获取榜单失败"
+            return outcome
 
-        sent = 0
+        if not comics:
+            # 空榜单（接口抖动 / 风控 / 限流）不该广播给所有订阅群：
+            # 手动 /picarank 保留「排行榜为空」提示，主动推送直接跳过。
+            logger.info(
+                f"{tt} 榜单为空，跳过本次推送（{len(groups)} 个订阅会话）"
+            )
+            outcome.skipped = "榜单为空"
+            return outcome
+
         for umo in groups:
             try:
+                delivered = True
                 for text in self._rank_texts(tt, comics, diff):
-                    await self._notify(umo, text)
-                await self._maybe_send_rank_cover_pdf(umo, comics, token, tt)
-                sent += 1
+                    if not await self._notify(umo, text):
+                        delivered = False
+                if delivered:
+                    outcome.delivered += 1
             except Exception as e:
-                logger.warning(f"向 {umo} 推送 {tt} 排行榜失败: {e}")
-        logger.info(f"排行榜定时推送完成: {tt} → {sent} 个会话")
-        return sent
+                logger.warning(f"向 {umo} 推送 {tt} 榜单文本失败: {e}")
+
+        # 封面 PDF 属附加内容：一次构建、多群复用（避免每个会话都重新打包），
+        # 成败只记日志，不计入「榜单是否送达」。
+        if self.config.get("rank_cover_pdf", False):
+            pack = await self._build_rank_cover_pdf(comics, token, tt)
+            if pack.path is None:
+                logger.warning(
+                    f"{tt} 封面 PDF 生成失败，本次推送不带封面: {pack.error}"
+                )
+            else:
+                for umo in groups:
+                    try:
+                        await self._send_rank_cover_pdf_file(umo, pack, tt)
+                    except Exception as e:
+                        logger.warning(f"向 {umo} 推送封面 PDF 失败: {e}")
+
+        logger.info(
+            f"排行榜定时推送完成: {tt} → {outcome.delivered}/{outcome.attempted} 个会话"
+        )
+        return outcome
 
     async def _subscription_identity(self, groups: list[str]) -> tuple[str, str] | None:
         """定时推送用的账号：优先订阅者自己绑定的账号，其次配置的默认账号"""

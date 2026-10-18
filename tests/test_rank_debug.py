@@ -77,11 +77,14 @@ class _FakeAuth:
 
 
 class _FakeContext:
-    def __init__(self):
+    def __init__(self, fail_for=()):
         self.calls = []
+        self.fail_for = set(fail_for)
 
     async def send_message(self, umo, chain):
         self.calls.append((umo, chain))
+        if umo in self.fail_for:
+            raise RuntimeError("send failed")
         return True
 
     def texts_for(self, umo):
@@ -277,7 +280,8 @@ def test_debug_reports_when_nobody_subscribed(tmp_path):
     assert "共推送 0 个会话" in _all(event)
 
 
-def test_debug_reports_push_failure_without_account(tmp_path):
+def test_debug_reports_skipped_without_account(tmp_path):
+    """没有可用账号属于「整批跳过」，不该谎报成「推送失败」"""
     plugin = _make_plugin(
         tmp_path, BASE_CONFIG, boards={"H24": _comics("a")}, bound={}, default=None
     )
@@ -286,8 +290,46 @@ def test_debug_reports_push_failure_without_account(tmp_path):
     event = _FakeEvent()
     _run_debug(plugin, event)
 
-    assert "推送失败" in _all(event)
+    assert "已跳过" in _all(event)
+    assert "没有可用的哔咔账号" in _all(event)
     assert "共推送 0 个会话" in _all(event)
+
+
+def test_debug_reports_empty_board_as_skipped(tmp_path):
+    """空榜单时应跳过并在回执里说明原因，而不是发一条「排行榜为空」给所有群"""
+    plugin = _make_plugin(
+        tmp_path,
+        BASE_CONFIG,
+        boards={"H24": []},
+        bound={"u1": "tk"},
+    )
+    plugin.subs.add(UMO_A, "H24", "u1")
+
+    event = _FakeEvent()
+    _run_debug(plugin, event, "H24")
+
+    assert "已跳过（榜单为空）" in _all(event)
+    assert plugin.context.calls == [], "空榜单不应发出任何消息"
+    assert "共推送 0 个会话" in _all(event)
+
+
+def test_debug_reports_partial_delivery(tmp_path):
+    """部分会话失败时，回执要给出「已推送 x/y」而不是笼统的成功/失败"""
+    plugin = _make_plugin(
+        tmp_path,
+        BASE_CONFIG,
+        boards={"H24": _comics("a")},
+        bound={"u1": "tk"},
+    )
+    plugin.subs.add(UMO_A, "H24", "u1")
+    plugin.subs.add(UMO_B, "H24", "u1")
+    plugin.context = _FakeContext(fail_for={UMO_A})
+
+    event = _FakeEvent()
+    _run_debug(plugin, event, "H24")
+
+    assert "已推送给 1/2 个会话" in _all(event)
+    assert "共推送 1 个会话" in _all(event)
 
 
 def test_debug_invalid_arg_shows_usage(tmp_path):

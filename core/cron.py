@@ -14,7 +14,8 @@ cron 表达式匹配（5 字段：分 时 日 月 星期）
 ===== ================
 
 每个字段支持 ``*``（任意）、``a``（定值）、``a-b``（范围）、``a,b,c``（枚举）、
-``*/n`` 与 ``a-b/n``（步进）。
+``*/n``、``a-b/n`` 与 ``a/n``（步进）。其中 ``a/n`` 与 Vixie cron 一致：
+表示从 ``a`` 开始按步进走到该字段上限（例如分钟字段 ``5/10`` = 5,15,25,…,55）。
 
 注意：日与星期**同时**被限定时按「同时满足」处理（AND），与部分 cron 实现的
 「任一满足」（OR）不同；只限制其中一个、另一个写 ``*`` 时两者行为一致。
@@ -50,7 +51,8 @@ def _parse_field(text: str, name: str, lo: int, hi: int) -> set[int]:
             raise CronError(f"{name}字段含空项: {text}")
 
         step = 1
-        if "/" in part:
+        has_step = "/" in part
+        if has_step:
             part, _, step_text = part.partition("/")
             if not _DIGITS.match(step_text) or int(step_text) <= 0:
                 raise CronError(f"{name}步进非法: {raw}")
@@ -64,7 +66,11 @@ def _parse_field(text: str, name: str, lo: int, hi: int) -> set[int]:
                 raise CronError(f"{name}范围非法: {raw}")
             start, end = int(start_text), int(end_text)
         elif _DIGITS.match(part):
-            start = end = int(part)
+            start = int(part)
+            # 与 Vixie cron 一致：带步进的 "a/n" 表示从 a 开始按步进走到字段上限
+            # （分钟字段 "5/10" = 5,15,25,35,45,55；"5/1" = 5..59），
+            # 不带步进时仍是单值 {a}
+            end = hi if has_step else start
         else:
             raise CronError(f"{name}取值非法: {raw}")
 

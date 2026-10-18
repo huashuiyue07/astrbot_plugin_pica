@@ -57,6 +57,25 @@ def test_groups_for_returns_sorted_sessions(tmp_path):
     assert store.groups_for("D30") == []
 
 
+def test_groups_for_reads_file_once(tmp_path):
+    """无论有多少订阅会话，groups_for 只读一次盘（此前是 n+1 次）"""
+    store = RankSubscriptionStore(tmp_path)
+    for index in range(5):
+        store.add(f"default:group:{index}", "H24")
+
+    reads = []
+    real_read = store._read
+
+    def _counting_read():
+        reads.append(1)
+        return real_read()
+
+    store._read = _counting_read
+
+    assert len(store.groups_for("H24")) == 5
+    assert len(reads) == 1
+
+
 def test_remove_single_target_keeps_others(tmp_path):
     store = RankSubscriptionStore(tmp_path)
     store.add(UMO_A, "H24")

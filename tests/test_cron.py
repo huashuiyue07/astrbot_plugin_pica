@@ -43,6 +43,25 @@ def test_minute_step():
     assert not cron_matches(expr, _dt(2026, 8, 3, 0, 7))
 
 
+def test_bare_value_with_step_follows_vixie_semantics():
+    """`a/n` = 从 a 开始按步进走到字段上限（Vixie cron 语义）"""
+    assert parse_cron("5/10 * * * *")[0] == frozenset({5, 15, 25, 35, 45, 55})
+    assert parse_cron("0 2/6 * * *")[1] == frozenset({2, 8, 14, 20})
+
+    assert cron_matches("5/10 * * * *", _dt(2026, 8, 3, 0, 25))
+    assert not cron_matches("5/10 * * * *", _dt(2026, 8, 3, 0, 7))
+
+
+def test_bare_value_with_step_at_field_upper_bound():
+    assert parse_cron("59/10 * * * *")[0] == frozenset({59})
+
+
+def test_bare_value_without_step_is_single():
+    assert parse_cron("5 * * * *")[0] == frozenset({5})
+    # a/1 等价于 a..上限（与 Vixie 一致）
+    assert parse_cron("5/1 * * * *")[0] == frozenset(range(5, 60))
+
+
 def test_hour_range_step():
     expr = "0 0-23/6 * * *"
     for hour in (0, 6, 12, 18):
