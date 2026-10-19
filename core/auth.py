@@ -6,12 +6,14 @@ Pica 账号/token 管理（按用户隔离）
 - 未绑定用户：allow_default_account=True 时使用配置的默认账号兜底；
   为 False 时提示先绑定，避免群成员全走管理员的个人账号。
 - token 失效（JWT 过期 / 服务器端失效）自动重新登录：
-  - 用户自绑账号：绑定/登录时把 email/password 一并持久化，用于重登
+  - 用户自绑账号：仅在 `store_password=True` 时保存 email/password 用于重登；
+    默认只存 token（文件权限 600），否则需用户重新 /picalogin
   - 默认账号兜底：直接用配置里的默认账号密码重登
 """
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
 
@@ -30,14 +32,25 @@ class PicaAuthManager:
         default_email: str = "",
         default_password: str = "",
         allow_default_account: bool = True,
+        store_password: bool = False,
     ):
         self.client = client
         self.data_dir = data_dir
         self.tokens_dir = data_dir / "tokens"
         self.tokens_dir.mkdir(parents=True, exist_ok=True)
+        # token 目录仅本人可读（Windows 上 chmod 能力有限，失败忽略）
+        try:
+            os.chmod(self.tokens_dir, 0o700)
+        except OSError:
+            pass
         self.default_email = default_email
         self.default_password = default_password
         self.allow_default_account = allow_default_account
+        # 是否把用户密码落盘用于 token 过期后自动重登。默认关闭：
+        # 关闭时只保存 token，token 失效后由用户重新 /picalogin。
+        self.store_password = store_password
+        if not store_password:
+            self._scrub_stored_passwords()
 
         # 内存缓存: str(file_path) -> (token, expire_at)
         self._cache: dict[str, tuple[str, float]] = {}
@@ -45,6 +58,26 @@ class PicaAuthManager:
         self._default_token_file = data_dir / "token.json"
 
     # ---------- 内部 ----------
+
+    def _scrub_stored_passwords(self) -> None:
+        """store_password=False 时清理历史遗留的明文密码（保留 token 与 email）"""
+        removed = 0
+        for path in self.tokens_dir.glob("*.json"):
+            data = self._load_token_file(path)
+            if not data or "password" not in data:
+                continue
+            data.pop("password", None)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+                os.chmod(path, 0o600)
+                removed += 1
+            except OSError as e:
+                logger.warning(f"清理 token 文件密码失败 {path.name}: {e}")
+        if removed:
+            logger.info(
+                f"store_password=false：已从 {removed} 个 token 文件中移除明文密码"
+            )
 
     def _token_path(self, user_id: str) -> Path:
         return self.tokens_dir / f"{user_id}.json"
@@ -99,6 +132,11 @@ class PicaAuthManager:
                 payload["password"] = password
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
+            # 凭据/token 文件仅本人可读写
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         except Exception as e:
             logger.warning(f"保存 token 文件失败 {path.name}: {e}")
         self._cache[str(path)] = (token, expire_at)
@@ -140,9 +178,12 @@ class PicaAuthManager:
         if not email or not password:
             raise PicaError("请提供哔咔账号密码：/picalogin <邮箱> <密码>")
         token = await self.client.login(email, password)
-        # 一并持久化凭证，保证 token 失效时可自动重登
+        # 密码默认不落盘：只有显式开启 store_password 才保存，用于 token 过期后自动重登
         self._save_token(
-            self._token_path(user_id), token, email=email, password=password
+            self._token_path(user_id),
+            token,
+            email=email,
+            password=password if self.store_password else None,
         )
         return token
 
@@ -232,14 +273,23 @@ class PicaAuthManager:
         if user_id and user_id != "__default__":
             path = self._token_path(user_id)
             creds = self._read_creds(path)
-            self.logout(user_id)
             if creds:
+                self.logout(user_id)
                 token = await self.client.login(
                     creds["email"], creds["password"]
                 )
                 self._save_token(path, token, email=creds["email"], password=creds["password"])
                 logger.info(f"用户 {user_id} 的哔咔 token 失效，已自动重新登录")
                 return token
+            # 绑过自己的账号但没存密码（store_password=false）：不能悄悄换成默认账号，
+            # 否则用户的下载/收藏会落到别人的账号上
+            stored = self._load_token_file(path) or {}
+            if stored.get("email"):
+                self.logout(user_id)
+                raise PicaError(
+                    "登录状态已失效，且未保存密码，请重新发送 /picalogin 绑定"
+                )
+            self.logout(user_id)
 
         # 2. 默认账号
         self.logout_default()

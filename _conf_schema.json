@@ -17,6 +17,12 @@
     "hint": "关闭后，每个QQ用户必须用 /picalogin 绑定自己的哔咔账号才能使用，避免群成员共用你的个人账号（强烈建议关闭）",
     "default": true
   },
+  "store_password": {
+    "type": "bool",
+    "description": "保存用户密码用于自动重登",
+    "hint": "关闭（默认）时只保存 token，token 过期后需用户重新 /picalogin；开启后会把密码写入 data/tokens/{用户}.json（文件权限 600）以便自动重登，请自行评估服务器安全",
+    "default": false
+  },
   "use_proxy": {
     "type": "bool",
     "description": "是否使用代理",

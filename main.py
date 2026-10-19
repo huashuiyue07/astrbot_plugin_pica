@@ -110,7 +110,7 @@ class RankCoverPack:
     "astrbot_plugin_pica",
     "huashuiyue07",
     "哔咔漫画插件 - 搜索、查看、下载哔咔漫画本子，支持整本下载与打包",
-    "1.4.6",
+    "1.4.7",
     "https://github.com/huashuiyue07/astrbot_plugin_pica",
 )
 class PicaPlugin(Star):
@@ -146,6 +146,7 @@ class PicaPlugin(Star):
             default_email=config.get("pica_account", ""),
             default_password=config.get("pica_password", ""),
             allow_default_account=bool(config.get("allow_default_account", True)),
+            store_password=bool(config.get("store_password", False)),
         )
 
         # 下载器
@@ -304,16 +305,34 @@ class PicaPlugin(Star):
 
     # ---------- 登录（按用户绑定） ----------
 
+    @staticmethod
+    def _is_group_session(event: AstrMessageEvent) -> bool:
+        """当前会话是否为群聊（OneBot 的 UMO 形如 default:GroupMessage:123）"""
+        return ":GroupMessage:" in str(event.unified_msg_origin)
+
     @filter.command("picalogin")
     async def login_command(
         self, event: AstrMessageEvent, email: str = None, password: str = None
     ):
-        """绑定当前 QQ 的哔咔账号：/picalogin <邮箱> <密码>"""
+        """绑定当前 QQ 的哔咔账号：/picalogin <邮箱> <密码>（建议私聊）"""
         denied = self._guard(event)
         if denied:
             yield event.plain_result(denied)
             return
         user_id = self._uid(event)
+        if bool(email) != bool(password):
+            yield event.plain_result(
+                "❌ 用法: /picalogin <邮箱> <密码>\n"
+                "        或不带参数，直接绑定插件配置里的账号"
+            )
+            return
+        if email and self._is_group_session(event):
+            # 群聊里发密码会永久留在群消息、日志和会话库里
+            yield event.plain_result(
+                "🔒 请私聊我绑定账号：密码发在群里会留在聊天记录中\n"
+                "💡 私聊发送 /picalogin <邮箱> <密码>"
+            )
+            return
         try:
             if email and password:
                 yield event.plain_result("🔑 正在绑定你的哔咔账号...")

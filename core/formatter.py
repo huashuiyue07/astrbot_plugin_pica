@@ -209,7 +209,7 @@ class MessageFormatter:
             "/picafav <ID> - 收藏/取消收藏\n"
             "/picamyfav [页码] - 我的收藏\n"
             "/picapunch - 每日签到\n"
-            "/picalogin <邮箱> <密码> - 绑定自己的哔咔账号\n"
+            "/picalogin <邮箱> <密码> - 绑定自己的哔咔账号（请私聊，群聊会被拒绝）\n"
             "/picalogout - 解绑自己的账号\n"
             "/picastatus - 查看账号绑定状态\n"
             "/picacat - 分区列表\n"

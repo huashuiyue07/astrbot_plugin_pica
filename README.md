@@ -122,7 +122,7 @@ docker restart astrbot
 | 命令 | 说明 |
 |---|---|
 | `/pica` / `/picahelp` | 帮助 |
-| `/picalogin <邮箱> <密码>` | 绑定当前 QQ 自己的哔咔账号（隔离） |
+| `/picalogin <邮箱> <密码>` | 绑定当前 QQ 自己的哔咔账号（**仅私聊可用**，群聊会被拒绝） |
 | `/picalogout` | 解绑当前 QQ 的账号 |
 | `/picastatus` | 查看当前 QQ 账号绑定状态 |
 | `/picasearch <关键词> [页码]` | 搜索本子 |
@@ -144,16 +144,22 @@ docker restart astrbot
 
 - 每个 QQ 用户可发送 `/picalogin <邮箱> <密码>` 绑定**自己的**哔咔账号，
   token 按 QQ 号独立存储（`data/tokens/{qq号}.json`），互不共用。
+- **绑定只在私聊生效**：群聊里发送会直接被拒绝，避免密码留在群消息、日志与会话库里。
 - 配置项 `allow_default_account`：
   - `true`（默认）：未绑定用户回退使用配置的默认账号
   - `false`：未绑定用户被拒绝并提示先绑定，**避免群成员共用你的个人账号**（推荐）
+- 配置项 `store_password`（默认 `false`）：
+  - `false`：只保存 token，**密码不落盘**；token 过期后需要用户重新 `/picalogin`
+  - `true`：把邮箱与密码一起写入 `data/tokens/{qq号}.json`，token 失效时可自动重登；
+    密码属于明文存储，仅在你能完全信任这台主机时开启
 
 ## 安全提示
 
-- `/picalogin <邮箱> <密码>` 的账号密码会明文出现在聊天消息里（群内全员可见），
-  请**私聊机器人**使用绑定，群内尽量用 `/picalogin` 不带参数走默认账号兜底。
-- 绑定的账号密码与 token 以 JSON 明文保存在本机 AstrBot 数据目录
-  （`data/tokens/{qq号}.json`），请勿将 AstrBot 主机开放给不可信的人。
+- **请私聊机器人绑定账号**：`/picalogin` 在群聊会被直接拒绝——密码一旦发在群里，
+  会永久留在群消息记录、AstrBot 日志与会话数据库中，插件无法撤回。
+- `data/tokens/` 目录权限为 `700`，其中的 token 文件权限为 `600`（仅 AstrBot 运行用户可读）。
+- 默认**不保存用户密码**（`store_password=false`）；开启后密码以明文保存，
+  请确认主机与数据目录的访问权限可控，并优先为机器人使用独立的哔咔账号。
 - 若 bot 部署在公共/半开放环境，建议开启 `admin_only` 并配置 `admin_ids`，
   避免任何群成员直接操作你的默认账号。
 
